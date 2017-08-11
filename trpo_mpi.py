@@ -1,5 +1,5 @@
 from math_util import explained_variance 
-from misc_util import zipsame 
+from misc_util import zipsame, header, warn, failure 
 import dataset
 # from baselines import logger
 import tf_util as U
@@ -93,7 +93,8 @@ def learn(env, policy_func,
         vf_stepsize=3e-4,
         vf_iters =3,
         max_timesteps=0, max_episodes=0, max_iters=0,  # time constraint
-        callback=None
+        callback=None,
+        save_iter_freq = 50
         ):
     # nworkers = MPI.COMM_WORLD.Get_size()
     # rank = MPI.COMM_WORLD.Get_rank()
@@ -192,6 +193,13 @@ def learn(env, policy_func,
 
     assert sum([max_iters>0, max_timesteps>0, max_episodes>0])==1
 
+    iter_log = []
+    epis_log = []
+    timestep_log = []
+    ret_mean_log = []
+    ret_std_log = []
+
+
     while True:        
         if callback: callback(locals(), globals())
         if max_timesteps and timesteps_so_far >= max_timesteps:
@@ -203,7 +211,7 @@ def learn(env, policy_func,
         elif max_iters and iters_so_far >= max_iters:
             print "Max Iter : {}".format(iters_so_far)
             break
-        print("********** Iteration %i ************"%iters_so_far)
+        warn("********** Iteration %i ************"%iters_so_far)
 
         # with timed("sampling"):
         #       seg = seg_gen.__next__()
@@ -248,7 +256,7 @@ def learn(env, policy_func,
                 meanlosses = surr, kl, _,_,_ = np.array(compute_losses(*args))
                 #losses = [optimgain, meankl, entbonus, surrgain, meanent]
                 improve = surr - surrbefore
-                print("Expected: %.3f Actual: %.3f"%(expectedimprove, improve))
+                # print("Expected: %.3f Actual: %.3f"%(expectedimprove, improve))
                 if not np.isfinite(meanlosses).all():
                     print("Got non-finite value of losses -- bad!")
                 elif kl > max_kl * 1.5:
@@ -256,7 +264,6 @@ def learn(env, policy_func,
                 elif improve < 0:
                     print("surrogate didn't improve. shrinking step.")
                 else:
-                    print("Stepsize OK!")
                     break
                 stepsize *= .5
             else:
@@ -291,11 +298,42 @@ def learn(env, policy_func,
         # rewbuffer.extend(rews)
 
         # logger.record_tabular("EpLenMean", np.mean(lenbuffer))
-        print("EpRewMean", np.mean(seg["ep_rets"]))
+        # print("EpRewMean", np.mean(seg["ep_rets"]))
         # logger.record_tabular("EpThisIter", len(lens))
+
+
         episodes_so_far += len(seg["ep_lens"])
         timesteps_so_far += sum(seg["ep_lens"])
         iters_so_far += 1
+
+        mean_ret = np.mean(seg["ep_rets"])
+        std_ret = np.std(seg["ep_rets"])
+
+        if iters_so_far % save_iter_freq == 1:
+            iter_log.append(iters_so_far)
+            epis_log.append(episodes_so_far)
+            timestep_log.append(timesteps_so_far)
+            ret_mean_log.append(mean_ret)
+            ret_std_log.append(std_ret)
+
+            save_file = "test_iter_{}.hdf5".format(iters_so_far)
+
+            with h5py.File(save_file, 'w') as f:
+                def write(dsetname, a):
+                    f.create_dataset(dsetname, data=a, compression='gzip', compression_opts=9)
+                # Right-padded trajectory data using custom RaggedArray class.
+                write('iters_so_far', iter_log)
+                write('episodes_so_far', epis_log)
+                write('timesteps_so_far', timestep_log)
+                write('mean_ret', ret_mean_log)
+                write('std_ret', ret_std_log)
+                
+            header('Wrote {}'.format(save_file))
+        header('iters_so_far : {}'.format(iters_so_far))
+        header('timesteps_so_far : {}'.format(timesteps_so_far))
+        header('mean_ret : {}'.format(mean_ret))
+        header('std_ret : {}'.format(std_ret))
+
 
         # logger.record_tabular("EpisodesSoFar", episodes_so_far)
         # logger.record_tabular("TimestepsSoFar", timesteps_so_far)
