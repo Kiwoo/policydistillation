@@ -1,5 +1,5 @@
 from math_util import explained_variance 
-from misc_util import zipsame, header, warn, failure 
+from misc_util import zipsame, header, warn, failure, filesave 
 import dataset
 # from baselines import logger
 import tf_util as U
@@ -12,6 +12,7 @@ from collections import deque
 import cg
 from contextlib import contextmanager
 import h5py
+import pandas as pd
 
 def traj_segment_generator(pi, env, horizon, stochastic):
     # Initialize state variables
@@ -94,7 +95,7 @@ def learn(env, policy_func,
         vf_iters =3,
         max_timesteps=0, max_episodes=0, max_iters=0,  # time constraint
         callback=None,
-        save_iter_freq = 50
+        save_iter_freq = 100
         ):
     # nworkers = MPI.COMM_WORLD.Get_size()
     # rank = MPI.COMM_WORLD.Get_rank()
@@ -309,26 +310,29 @@ def learn(env, policy_func,
         mean_ret = np.mean(seg["ep_rets"])
         std_ret = np.std(seg["ep_rets"])
 
+
+        iter_log.append(iters_so_far)
+        epis_log.append(episodes_so_far)
+        timestep_log.append(timesteps_so_far)
+        ret_mean_log.append(mean_ret)
+        ret_std_log.append(std_ret)
+
         if iters_so_far % save_iter_freq == 1:
-            iter_log.append(iters_so_far)
-            epis_log.append(episodes_so_far)
-            timestep_log.append(timesteps_so_far)
-            ret_mean_log.append(mean_ret)
-            ret_std_log.append(std_ret)
+            iter_log_d = pd.DataFrame(iter_log)
+            epis_log_d = pd.DataFrame(epis_log)
+            timestep_log_d = pd.DataFrame(timestep_log)
+            ret_mean_log_d = pd.DataFrame(ret_mean_log)
+            ret_std_log_d = pd.DataFrame(ret_std_log)
 
-            save_file = "test_iter_{}.hdf5".format(iters_so_far)
-
-            with h5py.File(save_file, 'w') as f:
-                def write(dsetname, a):
-                    f.create_dataset(dsetname, data=a, compression='gzip', compression_opts=9)
-                # Right-padded trajectory data using custom RaggedArray class.
-                write('iters_so_far', iter_log)
-                write('episodes_so_far', epis_log)
-                write('timesteps_so_far', timestep_log)
-                write('mean_ret', ret_mean_log)
-                write('std_ret', ret_std_log)
+            save_file = "test_iter_{}.h5".format(iters_so_far)
+            with pd.HDFStore(save_file, 'w') as outf:
+                outf['iter_log'] = iter_log_d
+                outf['epis_log'] = epis_log_d
+                outf['timestep_log'] = timestep_log_d
+                outf['ret_mean_log'] = ret_mean_log_d
+                outf['ret_std_log'] = ret_std_log_d
                 
-            header('Wrote {}'.format(save_file))
+            filesave('Wrote {}'.format(save_file))
         header('iters_so_far : {}'.format(iters_so_far))
         header('timesteps_so_far : {}'.format(timesteps_so_far))
         header('mean_ret : {}'.format(mean_ret))

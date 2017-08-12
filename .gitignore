@@ -6,5 +6,7 @@
 *.TXT
 *.pkl
 *.hdf5
+*.png
+*.h5
 __pycache__
 
