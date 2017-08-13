@@ -22,6 +22,7 @@ def traj_segment_generator(pi, env, horizon, stochastic):
     rew = 0.0
     ob = env.reset()
 
+
     cur_ep_ret = 0
     cur_ep_len = 0
     ep_rets = []
@@ -60,6 +61,9 @@ def traj_segment_generator(pi, env, horizon, stochastic):
         ob, rew, new, _ = env.step(ac)
         rews[i] = rew
 
+        # vel = env.get_vel()
+        # print vel
+
         cur_ep_ret += rew
         cur_ep_len += 1
         if new:
@@ -95,7 +99,8 @@ def learn(env, policy_func,
         vf_iters =3,
         max_timesteps=0, max_episodes=0, max_iters=0,  # time constraint
         callback=None,
-        save_iter_freq = 100
+        save_data_freq = 100,
+        save_model_freq = 100
         ):
     # nworkers = MPI.COMM_WORLD.Get_size()
     # rank = MPI.COMM_WORLD.Get_rank()
@@ -199,6 +204,9 @@ def learn(env, policy_func,
     timestep_log = []
     ret_mean_log = []
     ret_std_log = []
+
+    saver = tf.train.Saver()
+    meta_saved = False
 
 
     while True:        
@@ -317,7 +325,16 @@ def learn(env, policy_func,
         ret_mean_log.append(mean_ret)
         ret_std_log.append(std_ret)
 
-        if iters_so_far % save_iter_freq == 1:
+        if iters_so_far % save_model_freq == 1:
+            if meta_saved == True:
+                saver.save(U.get_session(), 'my_test_model', global_step = iters_so_far, write_meta_graph = False)
+            else:
+                print "Save  meta graph"
+                saver.save(U.get_session(), 'my_test_model', global_step = iters_so_far, write_meta_graph = True)
+                meta_saved = True
+
+
+        if iters_so_far % save_data_freq == 1:
             iter_log_d = pd.DataFrame(iter_log)
             epis_log_d = pd.DataFrame(epis_log)
             timestep_log_d = pd.DataFrame(timestep_log)
@@ -333,6 +350,7 @@ def learn(env, policy_func,
                 outf['ret_std_log'] = ret_std_log_d
                 
             filesave('Wrote {}'.format(save_file))
+
         header('iters_so_far : {}'.format(iters_so_far))
         header('timesteps_so_far : {}'.format(timesteps_so_far))
         header('mean_ret : {}'.format(mean_ret))
