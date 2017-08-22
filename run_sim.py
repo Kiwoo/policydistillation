@@ -2,7 +2,7 @@
 from misc_util import set_global_seeds
 import tf_util as U
 import benchmarks
-import monitor
+# import monitor
 import os.path as osp
 import gym, logging
 # import logger
@@ -25,7 +25,7 @@ def sim(env_id, num_timesteps, seed):
     sess.__enter__()
 
     # U.initialize()
-    saver = tf.train.import_meta_graph('my_test_model-1.meta')
+    saver = tf.train.import_meta_graph('my_test_model-11.meta')
     saver.restore(sess, tf.train.latest_checkpoint('./'))
 
     graph = tf.get_default_graph()
@@ -40,6 +40,7 @@ def sim(env_id, num_timesteps, seed):
     env = gym.make(env_id)
     ob = env.reset()
     i = 0
+
     for _ in range(10000):
         env.render()
         i = i+1
@@ -49,13 +50,14 @@ def sim(env_id, num_timesteps, seed):
         # print ac
         ob, reward, done, info = env.step(ac)
         if done:
-            print "Done: {}".format(i)
-            i = 0
-            env.reset()
+            break
+            # print "Done: {}".format(i)
+            # i = 0
+            # env.reset()
 
 
 def main():
-    sim('Hopper-v1', num_timesteps=1e7, seed=0)
+    sim('HopperC1-v1', num_timesteps=1e7, seed=0)
 
 if __name__ == '__main__':
     main()

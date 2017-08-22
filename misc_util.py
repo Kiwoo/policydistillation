@@ -6,7 +6,7 @@ import random
 import tempfile
 import time
 import zipfile
-
+import errno
 
 def get_cur_dir():
     return os.getcwd()
@@ -24,6 +24,14 @@ def warn(s): print Colors.WARNING + s + Colors.ENDC
 def failure(s): print Colors.FAIL + s + Colors.ENDC
 def filesave(s) : print Colors.OKGREEN + s + Colors.ENDC
 
+def mkdir_p(path):
+    try:
+        os.makedirs(path)
+    except OSError as exc:  # Python >2.5
+        if exc.errno == errno.EEXIST and os.path.isdir(path):
+            pass
+        else:
+            raise
 
 def zipsame(*seqs):
     L = len(seqs[0])

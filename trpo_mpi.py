@@ -1,5 +1,5 @@
 from math_util import explained_variance 
-from misc_util import zipsame, header, warn, failure, filesave 
+from misc_util import zipsame, header, warn, failure, filesave, mkdir_p, get_cur_dir
 import dataset
 # from baselines import logger
 import tf_util as U
@@ -13,6 +13,7 @@ import cg
 from contextlib import contextmanager
 import h5py
 import pandas as pd
+import os
 
 def traj_segment_generator(pi, env, horizon, stochastic):
     # Initialize state variables
@@ -87,7 +88,19 @@ def add_vtarg_and_adv(seg, gamma, lam):
         gaelam[t] = lastgaelam = delta + gamma * lam * nonterminal * lastgaelam
     seg["tdlamret"] = seg["adv"] + seg["vpred"]
 
-def learn(env, policy_func, 
+def load_checkpoints(checkpoint_dir = get_cur_dir()):
+    saver = tf.train.Saver(max_to_keep = None)
+    checkpoint = tf.train.get_checkpoint_state(checkpoint_dir)
+    if checkpoint and checkpoint.model_checkpoint_path:
+        saver.restore(U.get_session(), checkpoint.model_checkpoint_path)
+        header("loaded checkpoint: {0}".format(checkpoint.model_checkpoint_path))
+    else:
+        header("Could not find old checkpoint")
+        if not os.path.exists(checkpoint_dir):
+            mkdir_p(checkpoint_dir)
+    return saver    
+
+def learn(env, env_id, policy_func, 
         timesteps_per_batch, # what to train on
         max_kl, cg_iters,
         gamma, lam, # advantage estimation
@@ -97,10 +110,11 @@ def learn(env, policy_func,
         cg_damping=1e-2,
         vf_stepsize=3e-4,
         vf_iters =3,
-        max_timesteps=0, max_episodes=0, max_iters=0,  # time constraint
+        max_timesteps=0, max_episodes=0, max_iters=6002,  # time constraint
         callback=None,
-        save_data_freq = 100,
-        save_model_freq = 100
+        save_data_freq = 10,
+        save_model_freq = 10,
+        render_freq = 10
         ):
     # nworkers = MPI.COMM_WORLD.Get_size()
     # rank = MPI.COMM_WORLD.Get_rank()
@@ -205,7 +219,12 @@ def learn(env, policy_func,
     ret_mean_log = []
     ret_std_log = []
 
-    saver = tf.train.Saver()
+    # saver = tf.train.Saver(max_to_keep = None)
+    cur_dir = get_cur_dir()
+    save_dir = os.path.join(cur_dir, env_id)
+    print save_dir
+    saver = load_checkpoints(checkpoint_dir = save_dir)
+
     meta_saved = False
 
 
@@ -241,31 +260,24 @@ def learn(env, policy_func,
             return compute_fvp(p, *fvpargs) + cg_damping * p
 
         assign_old_eq_new() # set old parameter values to new parameter values
-        # with timed("computegrad"):
         surrbefore, _,_,_,_, g = compute_lossandgrad(*args)
         surrbefore = np.array(surrbefore)
-        # g = allmean(g)
         if np.allclose(g, 0):
             print("Got zero gradient. not updating")
         else:
-            # with timed("cg"):
             stepdir = U.conjugate_gradient(fisher_vector_product, g, cg_iters=cg_iters)
             assert np.isfinite(stepdir).all()
             shs = .5*stepdir.dot(fisher_vector_product(stepdir))
             lm = np.sqrt(shs / max_kl)
-            # logger.log("lagrange multiplier:", lm, "gnorm:", np.linalg.norm(g))
             fullstep = stepdir / lm
             expectedimprove = g.dot(fullstep)
-            # surrbefore = lossbefore[0]
             stepsize = 1.0
             thbefore = get_flat()
             for _ in range(10):
                 thnew = thbefore + fullstep * stepsize
                 set_from_flat(thnew)
                 meanlosses = surr, kl, _,_,_ = np.array(compute_losses(*args))
-                #losses = [optimgain, meankl, entbonus, surrgain, meanent]
                 improve = surr - surrbefore
-                # print("Expected: %.3f Actual: %.3f"%(expectedimprove, improve))
                 if not np.isfinite(meanlosses).all():
                     print("Got non-finite value of losses -- bad!")
                 elif kl > max_kl * 1.5:
@@ -278,39 +290,12 @@ def learn(env, policy_func,
             else:
                 print("couldn't compute a good step")
                 set_from_flat(thbefore)
-            # if nworkers > 1 and iters_so_far % 20 == 0:
-                # paramsums = MPI.COMM_WORLD.allgather((thnew.sum(), vfadam.getflat().sum())) # list of tuples
-                # assert all(np.allclose(ps, paramsums[0]) for ps in paramsums[1:])
-
-        # for (lossname, lossval) in zip(loss_names, meanlosses):
-            # logger.record_tabular(lossname, lossval)
-
-        # with timed("vf"):
-
-
 
         for _ in range(vf_iters):
             for (mbob, mbret) in dataset.iterbatches((seg["ob"], seg["tdlamret"]), 
             include_final_partial_batch=False, batch_size=64):
-                # vfloss = compute_vfloss(mbob, mbret)
                 vfloss = vf_train(mbob, mbret)
-                #### CHECK !!!! ####
                 
-                # vfadam.update(g, vf_stepsize)
-
-        # print("ev_tdlam_before", explained_variance(vpredbefore, tdlamret))
-
-        # lrlocal = (seg["ep_lens"], seg["ep_rets"]) # local values
-        # listoflrpairs = MPI.COMM_WORLD.allgather(lrlocal) # list of tuples
-        # lens, rews = map(flatten_lists, zip(*listoflrpairs))
-        # lenbuffer.extend(lens)
-        # rewbuffer.extend(rews)
-
-        # logger.record_tabular("EpLenMean", np.mean(lenbuffer))
-        # print("EpRewMean", np.mean(seg["ep_rets"]))
-        # logger.record_tabular("EpThisIter", len(lens))
-
-
         episodes_so_far += len(seg["ep_lens"])
         timesteps_so_far += sum(seg["ep_lens"])
         iters_so_far += 1
@@ -318,21 +303,19 @@ def learn(env, policy_func,
         mean_ret = np.mean(seg["ep_rets"])
         std_ret = np.std(seg["ep_rets"])
 
-
         iter_log.append(iters_so_far)
         epis_log.append(episodes_so_far)
         timestep_log.append(timesteps_so_far)
         ret_mean_log.append(mean_ret)
         ret_std_log.append(std_ret)
 
-        if iters_so_far % save_model_freq == 1:
+        if iters_so_far > 10 and iters_so_far % save_model_freq == 1:
             if meta_saved == True:
-                saver.save(U.get_session(), 'my_test_model', global_step = iters_so_far, write_meta_graph = False)
+                saver.save(U.get_session(), save_dir + '/' + 'checkpoint', global_step = iters_so_far, write_meta_graph = False)
             else:
                 print "Save  meta graph"
-                saver.save(U.get_session(), 'my_test_model', global_step = iters_so_far, write_meta_graph = True)
+                saver.save(U.get_session(), save_dir + '/' + 'checkpoint', global_step = iters_so_far, write_meta_graph = True)
                 meta_saved = True
-
 
         if iters_so_far % save_data_freq == 1:
             iter_log_d = pd.DataFrame(iter_log)
@@ -356,13 +339,6 @@ def learn(env, policy_func,
         header('mean_ret : {}'.format(mean_ret))
         header('std_ret : {}'.format(std_ret))
 
-
-        # logger.record_tabular("EpisodesSoFar", episodes_so_far)
-        # logger.record_tabular("TimestepsSoFar", timesteps_so_far)
-        # logger.record_tabular("TimeElapsed", time.time() - tstart)
-
-        # if rank==0:
-        #     logger.dump_tabular()
 
 def flatten_lists(listoflists):
     return [el for list_ in listoflists for el in list_]
