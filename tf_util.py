@@ -14,9 +14,9 @@ import collections
 clip = tf.clip_by_value
 
 
-def sum(x, axis=None, keepdims=False):
+def sum(x, axis=None, keepdims=False, name = None):
     axis = None if axis is None else [axis]
-    return tf.reduce_sum(x, axis=axis, keep_dims=keepdims)
+    return tf.reduce_sum(x, axis=axis, keep_dims=keepdims, name = name)
 
 
 def mean(x, axis=None, keepdims=False):

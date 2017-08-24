@@ -110,7 +110,7 @@ def learn(env, env_id, policy_func,
         cg_damping=1e-2,
         vf_stepsize=3e-4,
         vf_iters =3,
-        max_timesteps=0, max_episodes=0, max_iters=6002,  # time constraint
+        max_timesteps=0, max_episodes=0, max_iters=122,  # time constraint
         callback=None,
         save_data_freq = 10,
         save_model_freq = 10,
@@ -324,7 +324,15 @@ def learn(env, env_id, policy_func,
             ret_mean_log_d = pd.DataFrame(ret_mean_log)
             ret_std_log_d = pd.DataFrame(ret_std_log)
 
-            save_file = "test_iter_{}.h5".format(iters_so_far)
+            
+            log_dir = "{}_log".format(env_id)
+            log_dir = os.path.join(cur_dir, log_dir)
+            if not os.path.exists(log_dir):
+                mkdir_p(log_dir)
+
+            save_file = "iter_{}.h5".format(iters_so_far)
+            save_file = os.path.join(log_dir, save_file)
+
             with pd.HDFStore(save_file, 'w') as outf:
                 outf['iter_log'] = iter_log_d
                 outf['epis_log'] = epis_log_d

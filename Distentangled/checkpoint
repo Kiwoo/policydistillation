@@ -1,0 +1,2 @@
+model_checkpoint_path: "/home/kiwoo/work/policydistillation/Distentangled/checkpoint-501"
+all_model_checkpoint_paths: "/home/kiwoo/work/policydistillation/Distentangled/checkpoint-501"

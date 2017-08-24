@@ -1,2 +1,2 @@
-model_checkpoint_path: "/home/kiwoo/work/policydistillation/Hopper-v1/checkpoint-411"
-all_model_checkpoint_paths: "/home/kiwoo/work/policydistillation/Hopper-v1/checkpoint-411"
+model_checkpoint_path: "/home/kiwoo/work/policydistillation/Hopper-v1/checkpoint-301"
+all_model_checkpoint_paths: "/home/kiwoo/work/policydistillation/Hopper-v1/checkpoint-301"

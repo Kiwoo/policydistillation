@@ -82,9 +82,9 @@ def main():
         header('ret_mean_log : {}'.format(np.shape(ret_mean_log)))
 
         fig = plt.figure(figsize=(10,8))
-        plt.plot(timestep_log, ret_mean_log, '-', lw=lw, color=c,
+        plt.plot(iter_log, ret_mean_log, '-', lw=lw, color=c,
                         markersize=ms, mew=mew, label="iter_mean_reward")
-        plt.fill_between(timestep_log, 
+        plt.fill_between(iter_log, 
                          ret_mean_log-ret_std_log,
                          ret_mean_log+ret_std_log, 
                          alpha=error_region_alpha, 
