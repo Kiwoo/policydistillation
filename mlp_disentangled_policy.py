@@ -12,7 +12,7 @@ class MlpDisentangledPolicy(object):
             self._init(*args, **kwargs)
             self.scope = tf.get_variable_scope().name
 
-    def _init(self, ob_space, ctrl_sz, ac_space, hid_size, num_hid_layers, beta = 4, gaussian_fixed_var=True):
+    def _init(self, ob_space, ctrl_sz, ac_space, hid_size, num_hid_layers, beta = 10, gaussian_fixed_var=True):
         assert isinstance(ob_space, gym.spaces.Box)
         self._ob_space  = ob_space
         self._ac_space  = ac_space
@@ -29,12 +29,12 @@ class MlpDisentangledPolicy(object):
         self._create_network()
 
     def _create_network(self):
-        n_hidden_encode   = [32, 32]
-        n_hidden_v        = [10, 10]
-        n_hidden_w        = [16, 16]
+        n_hidden_encode   = [64, 64]
+        n_hidden_v        = [32, 32]
+        n_hidden_w        = [32, 32]
         n_input           = self._ob_space.shape
-        n_z               = 20
-        n_w               = 12         # Need to test with value, 
+        n_z               = 32
+        n_w               = 20         # Need to test with value, 
         n_v               = n_z - n_w # Conditionally independent variables, from beta-VAE
 
         sequence_length = None
@@ -42,11 +42,15 @@ class MlpDisentangledPolicy(object):
         self.c_in   = U.get_placeholder(name="c_in", dtype = tf.float32, shape=[sequence_length, self._n_control])
 
         # need something related to observation normalization
-        self.obz    = self.ob
+        ob_mean = U.mean(self.ob)
+        ob_std  = U.std(self.ob)
+        self.obz    = tf.clip_by_value((self.ob - ob_mean) / ob_std, -5.0, 5.0)
         
         self.z_mean, self.z_log_sigma_sq = \
                                         self._create_encoder_network(hidden_layers = n_hidden_encode, latent_sz = n_z)
 
+        q_z_mean = 0
+        q_z_sigma = 0.1
         self.latent_loss = self.beta * -0.5 * tf.reduce_sum(1 + self.z_log_sigma_sq 
                                                   - tf.square(self.z_mean)
                                                   - tf.exp(self.z_log_sigma_sq), 1)
@@ -55,7 +59,7 @@ class MlpDisentangledPolicy(object):
         eps_shape   = tf.stack([batch_sz, n_z])
 
         # mean=0.0, stddev=1.0    
-        eps = tf.random_normal( eps_shape, 0, 1, dtype=tf.float32 )
+        eps = tf.random_normal( eps_shape, 0, 0.01, dtype=tf.float32 )
         
         # z = mu + sigma * epsilon
         self.z      = tf.add(self.z_mean, 
@@ -74,10 +78,10 @@ class MlpDisentangledPolicy(object):
     def _create_encoder_network(self, hidden_layers, latent_sz):
         last_out = self.obz
         for (i, hid_size) in enumerate(hidden_layers):
-            last_out    = tf.nn.relu(U.dense(last_out, hid_size, "enc%i"%(i+1), weight_init=tf.contrib.layers.xavier_initializer()))
+            last_out    = tf.nn.relu(U.dense(last_out, hid_size, "enc%i"%(i+1), weight_init=U.normc_initializer(0.1)))
 
-        z_mean          = U.dense(last_out, latent_sz, "enc_mean", weight_init=tf.contrib.layers.xavier_initializer())
-        z_log_sigma_sq  = U.dense(last_out, latent_sz, "enc_sigma", weight_init=tf.contrib.layers.xavier_initializer())
+        z_mean          = U.dense(last_out, latent_sz, "enc_mean", weight_init=U.normc_initializer(0.1))
+        z_log_sigma_sq  = U.dense(last_out, latent_sz, "enc_sigma", weight_init=U.normc_initializer(0.1))
 
         return (z_mean, z_log_sigma_sq)
 

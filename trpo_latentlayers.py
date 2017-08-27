@@ -15,18 +15,15 @@ import h5py
 import pandas as pd
 import os
 
-def traj_segment_generator(pi, env_list, horizon, stochastic):
+latent_weight = 0.001
+
+def traj_segment_generator(pi, env, horizon, stochastic):
     # Initialize state variables
     t = 0
-    env_index = 0
-    num_env = len(env_list)
-    env = env_list[env_index]
     ac = env.action_space.sample()
     new = True
     rew = 0.0
     ob = env.reset()
-    c_in = np.zeros(num_env)
-    part_horizon = np.arange(num_env+1) * horizon / num_env
 
     cur_ep_ret = 0
     cur_ep_len = 0
@@ -35,23 +32,21 @@ def traj_segment_generator(pi, env_list, horizon, stochastic):
 
     # Initialize history arrays
     obs = np.array([ob for _ in range(horizon)])
-    c_ins = np.array([c_in for _ in range(horizon)])
     rews = np.zeros(horizon, 'float32')
     vpreds = np.zeros(horizon, 'float32')
     news = np.zeros(horizon, 'int32')
     acs = np.array([ac for _ in range(horizon)])
     prevacs = acs.copy()
-
-    c_in[env_index] = 1.0
+    latent_losses = np.zeros(horizon, 'float32')
 
     while True:
         prevac = ac
-        ac, vpred = pi.act(stochastic, ob, c_in)
+        ac, vpred, lloss = pi.act(stochastic, ob)
         # Slight weirdness here because we need value function at time T
         # before returning segment [0, T-1] so we get the correct
         # terminal value
         if t > 0 and t % horizon == 0:
-            return {"ob" : obs, "c_in" : c_ins, "rew" : rews, "vpred" : vpreds, "new" : news,
+            return {"ob" : obs, "rew" : rews, "vpred" : vpreds, "latent_loss" : latent_losses, "new" : news,
                     "ac" : acs, "prevac" : prevacs, "nextvpred": vpred * (1 - new),
                     "ep_rets" : ep_rets, "ep_lens" : ep_lens}
             _, vpred = pi.act(stochastic, ob)            
@@ -61,17 +56,16 @@ def traj_segment_generator(pi, env_list, horizon, stochastic):
             ep_lens = []
         i = t % horizon
         obs[i] = ob
-        c_ins[i] = c_in
         vpreds[i] = vpred
         news[i] = new
         acs[i] = ac
         prevacs[i] = prevac
+        latent_losses[i] = lloss
 
         ob, rew, new, _ = env.step(ac)
+        # print "reward : {}, latent_loss: {}".format(rew, lloss * latent_weight)
+        rew = rew - lloss * latent_weight
         rews[i] = rew
-
-        # vel = env.get_vel()
-        # print vel
 
         cur_ep_ret += rew
         cur_ep_len += 1
@@ -80,13 +74,6 @@ def traj_segment_generator(pi, env_list, horizon, stochastic):
             ep_lens.append(cur_ep_len)
             cur_ep_ret = 0
             cur_ep_len = 0
-
-            if i > part_horizon[env_index+1]: # env index update to +1 so every environment contains similar number of trajectories.
-                c_in[env_index] = 0.0
-                env_index = (env_index + 1) % num_env
-                env = env_list[env_index]
-                c_in[env_index] = 1.0
-
             ob = env.reset()
         t += 1
 
@@ -115,7 +102,7 @@ def load_checkpoints(checkpoint_dir = get_cur_dir()):
             mkdir_p(checkpoint_dir)
     return saver    
 
-def learn(env_list, env_id_list, policy_func, 
+def learn(env, save_name, policy_func, 
         timesteps_per_batch, # what to train on
         max_kl, cg_iters,
         gamma, lam, # advantage estimation
@@ -125,7 +112,7 @@ def learn(env_list, env_id_list, policy_func,
         cg_damping=1e-2,
         vf_stepsize=3e-4,
         vf_iters =3,
-        max_timesteps=0, max_episodes=0, max_iters=3002,  # time constraint
+        max_timesteps=0, max_episodes=0, max_iters=10002,  # time constraint
         callback=None,
         save_data_freq = 10,
         save_model_freq = 10,
@@ -136,8 +123,8 @@ def learn(env_list, env_id_list, policy_func,
     # np.set_printoptions(precision=3)    
     # Setup losses and stuff
     # ----------------------------------------
-    ob_space = env_list[0].observation_space
-    ac_space = env_list[0].action_space
+    ob_space = env.observation_space
+    ac_space = env.action_space
     pi = policy_func("pi", ob_space, ac_space)
     oldpi = policy_func("oldpi", ob_space, ac_space)
     atarg = tf.placeholder(dtype=tf.float32, shape=[None]) # Target advantage function (if applicable)
@@ -145,7 +132,6 @@ def learn(env_list, env_id_list, policy_func,
 
     ob = U.get_placeholder_cached(name="ob")
     ac = pi.pdtype.sample_placeholder([None])
-    c_in = U.get_placeholder_cached(name="c_in")
 
     kloldnew = oldpi.pd.kl(pi.pd)
     ent = pi.pd.entropy()
@@ -153,35 +139,29 @@ def learn(env_list, env_id_list, policy_func,
     meanent = U.mean(ent)
     entbonus = entcoeff * meanent
 
-    latent_loss = pi.latent_loss
-    mean_latent_loss = U.mean(latent_loss)
+    latentloss = tf.reduce_mean(pi._latentloss)
 
     vferr = U.mean(tf.square(pi.vpred - ret))
 
     ratio = tf.exp(pi.pd.logp(ac) - oldpi.pd.logp(ac)) # advantage * pnew / pold
     surrgain = U.mean(ratio * atarg)
 
-    optimgain = surrgain - mean_latent_loss #+ entbonus - 
-    losses = [optimgain, meankl, entbonus, surrgain, meanent, mean_latent_loss]
-    loss_names = ["optimgain", "meankl", "entloss", "surrgain", "entropy", "latent_loss"]
+    optimgain = surrgain + entbonus
+    losses = [optimgain, meankl, entbonus, surrgain, meanent, latentloss]
+    loss_names = ["optimgain", "meankl", "entloss", "surrgain", "entropy", "latentloss"]
 
     dist = meankl
 
     all_var_list = pi.get_trainable_variables()
-    var_list = [v for v in all_var_list if v.name.split("/")[1].startswith("pol")]
-    vf_var_list = [v for v in all_var_list if v.name.split("/")[1].startswith("vf")]
-# v.name.split("/")[1].startswith("enc") or 
-##########################################3
-######### CHECK !!!!!!!!!!!!!!!!!!!!!!!!!!!
-#########################################3
-    dist_pol_var_list = [v for v in all_var_list if v.name.split("/")[1].startswith("distpol") or v.name.split("/")[1].startswith("enc")]
-    dist_vf_var_list  = [v for v in all_var_list if v.name.split("/")[1].startswith("distvf")]
+    var_list = [v for v in all_var_list if v.name.split("/")[1].startswith("pol1")]
+    vf_var_list = [v for v in all_var_list if v.name.split("/")[1].startswith("vf1")]
+ 
+    var_list_task = [v for v in all_var_list if v.name.split("/")[1].startswith("pol2")]
+    vf_var_list_task = [v for v in all_var_list if v.name.split("/")[1].startswith("vf2")]
 
-    task_pol_var_list = [v for v in all_var_list if v.name.split("/")[1].startswith("taskpol")]
-    task_vf_var_list  = [v for v in all_var_list if v.name.split("/")[1].startswith("taskvf")]
+
     #### CHECK !!!!! ######
 
-    print dist_pol_var_list
 
 
     optimizer=tf.train.AdamOptimizer(learning_rate=lr, epsilon = 0.01/vf_batch_size)
@@ -191,12 +171,11 @@ def learn(env_list, env_id_list, policy_func,
 
 
 
-    get_flat = U.GetFlat(dist_pol_var_list)
-    set_from_flat = U.SetFromFlat(dist_pol_var_list)
-    klgrads = tf.gradients(dist, dist_pol_var_list)
-
+    get_flat = U.GetFlat(var_list)
+    set_from_flat = U.SetFromFlat(var_list)
+    klgrads = tf.gradients(dist, var_list)
     flat_tangent = tf.placeholder(dtype=tf.float32, shape=[None], name="flat_tan")
-    shapes = [var.get_shape().as_list() for var in dist_pol_var_list]
+    shapes = [var.get_shape().as_list() for var in var_list]
     start = 0
     tangents = []
     for shape in shapes:
@@ -204,46 +183,45 @@ def learn(env_list, env_id_list, policy_func,
         tangents.append(tf.reshape(flat_tangent[start:start+sz], shape))
         start += sz
     gvp = tf.add_n([U.sum(g*tangent) for (g, tangent) in zipsame(klgrads, tangents)]) #pylint: disable=E1111
-    fvp = U.flatgrad(gvp, dist_pol_var_list)
-
-
-
-    get_flat_task = U.GetFlat(task_pol_var_list)
-    set_from_flat_task = U.SetFromFlat(task_pol_var_list)
-    klgrads_task = tf.gradients(dist, task_pol_var_list)
-
-    flat_tangent_task = tf.placeholder(dtype=tf.float32, shape=[None], name="flat_tan_task")
-    shapes = [var.get_shape().as_list() for var in task_pol_var_list]
-    start = 0
-    tangents = []
-    for shape in shapes:
-        sz = U.intprod(shape)
-        tangents.append(tf.reshape(flat_tangent_task[start:start+sz], shape))
-        start += sz
-    gvp_task = tf.add_n([U.sum(g*tangent) for (g, tangent) in zipsame(klgrads_task, tangents)]) #pylint: disable=E1111
-    fvp_task = U.flatgrad(gvp_task, task_pol_var_list)
+    fvp = U.flatgrad(gvp, var_list)
 
     assign_old_eq_new = U.function([],[], updates=[tf.assign(oldv, newv)
         for (oldv, newv) in zipsame(oldpi.get_variables(), pi.get_variables())])
-    compute_losses = U.function([ob, c_in, ac, atarg], losses)
-    compute_lossandgrad_dist = U.function([ob, c_in, ac, atarg], losses + [U.flatgrad(optimgain, dist_pol_var_list)])
-    compute_lossandgrad_task = U.function([ob, c_in, ac, atarg], losses + [U.flatgrad(optimgain, task_pol_var_list)])
-
-    compute_fvp = U.function([flat_tangent, ob, c_in, ac, atarg], fvp)
-    compute_vflossandgrad = U.function([ob, c_in, ret], U.flatgrad(vferr, dist_vf_var_list))
+    compute_losses = U.function([ob, ac, atarg], losses)
+    compute_lossandgrad = U.function([ob, ac, atarg], losses + [U.flatgrad(optimgain, var_list)])
+    compute_fvp = U.function([flat_tangent, ob, ac, atarg], fvp)
+    compute_vflossandgrad = U.function([ob, ret], U.flatgrad(vferr, vf_var_list))
     # compute_vfloss = U.function([ob, ret], vferr)
 
-    vf_optimize_expr = optimizer.minimize(vferr, var_list=dist_vf_var_list)
-    vf_train = U.function([ob, c_in, ret], vferr, updates = [vf_optimize_expr])
+    vf_optimize_expr = optimizer.minimize(vferr, var_list=vf_var_list)
+    vf_train = U.function([ob, ret], vferr, updates = [vf_optimize_expr])
 
 
 
-    compute_fvp_task = U.function([flat_tangent_task, ob, c_in, ac, atarg], fvp_task)
-    compute_vflossandgrad_task = U.function([ob, c_in, ret], U.flatgrad(vferr, task_vf_var_list))
+    get_flat_task = U.GetFlat(var_list_task)
+    set_from_flat_task = U.SetFromFlat(var_list_task)
+    klgrads_task = tf.gradients(dist, var_list_task)
+    flat_tangent_task = tf.placeholder(dtype=tf.float32, shape=[None], name="flat_tan")
+    shapes = [var.get_shape().as_list() for var in var_list_task]
+    start = 0
+    tangents_task = []
+    for shape in shapes:
+        sz = U.intprod(shape)
+        tangents_task.append(tf.reshape(flat_tangent_task[start:start+sz], shape))
+        start += sz
+    gvp_task = tf.add_n([U.sum(g*tangent) for (g, tangent) in zipsame(klgrads_task, tangents_task)]) #pylint: disable=E1111
+    fvp_task = U.flatgrad(gvp_task, var_list_task)
+
+    # compute_losses = U.function([ob, ac, atarg], losses)
+    compute_lossandgrad_task = U.function([ob, ac, atarg], losses + [U.flatgrad(optimgain, var_list_task)])
+    compute_fvp_task = U.function([flat_tangent_task, ob, ac, atarg], fvp_task)
+    compute_vflossandgrad_task = U.function([ob, ret], U.flatgrad(vferr, vf_var_list_task))
     # compute_vfloss = U.function([ob, ret], vferr)
 
-    vf_optimize_expr_task = optimizer.minimize(vferr, var_list=task_vf_var_list)
-    vf_train_task = U.function([ob, c_in, ret], vferr, updates = [vf_optimize_expr_task])
+    vf_optimize_expr_task = optimizer.minimize(vferr, var_list=vf_var_list_task)
+    vf_train_task = U.function([ob, ret], vferr, updates = [vf_optimize_expr_task])
+
+
 
 
     U.initialize()
@@ -266,9 +244,6 @@ def learn(env_list, env_id_list, policy_func,
     episodes_so_far = 0
     timesteps_so_far = 0
     iters_so_far = 0
-    # tstart = time.time()
-    lenbuffer = deque(maxlen=40) # rolling buffer for episode lengths
-    rewbuffer = deque(maxlen=40) # rolling buffer for episode rewards
 
     assert sum([max_iters>0, max_timesteps>0, max_episodes>0])==1
 
@@ -280,8 +255,8 @@ def learn(env_list, env_id_list, policy_func,
 
     # saver = tf.train.Saver(max_to_keep = None)
     cur_dir = get_cur_dir()
-    save_dir = os.path.join(cur_dir, "Distentangled")
-    header(save_dir)
+    save_dir = os.path.join(cur_dir, save_name)
+    print save_dir
     saver = load_checkpoints(checkpoint_dir = save_dir)
 
     meta_saved = False
@@ -302,113 +277,104 @@ def learn(env_list, env_id_list, policy_func,
 
         # with timed("sampling"):
         #       seg = seg_gen.__next__()
-        seg = traj_segment_generator(pi, env_list, timesteps_per_batch, stochastic=True)
+        seg = traj_segment_generator(pi, env, timesteps_per_batch, stochastic=True)
         add_vtarg_and_adv(seg, gamma, lam)
 
+
         # ob, ac, atarg, ret, td1ret = map(np.concatenate, (obs, acs, atargs, rets, td1rets))
-        ob, c_in, ac, atarg, tdlamret = seg["ob"], seg["c_in"], seg["ac"], seg["adv"], seg["tdlamret"]
+        ob, ac, atarg, tdlamret = seg["ob"], seg["ac"], seg["adv"], seg["tdlamret"]
         vpredbefore = seg["vpred"] # predicted value function before udpate
         atarg = (atarg - atarg.mean()) / atarg.std() # standardized advantage function estimate
 
         if hasattr(pi, "ret_rms"): pi.ret_rms.update(tdlamret)
         if hasattr(pi, "ob_rms"): pi.ob_rms.update(ob) # update running mean/std for policy
 
-        # print np.shape(seg["ob"])
-        # print np.shape(seg["c_in"])
-        # print np.shape(seg["ac"])
-        # print np.shape(seg["adv"])
-        args = seg["ob"], seg["c_in"], seg["ac"], seg["adv"]
-        # print seg["ac"]
+        args = seg["ob"], seg["ac"], seg["adv"]
         fvpargs = [arr[::5] for arr in args]
+
+
         def fisher_vector_product(p):
             return compute_fvp(p, *fvpargs) + cg_damping * p
 
-        def fisher_vector_product_task(p):
-            return compute_fvp_task(p, *fvpargs) + cg_damping * p
-
         assign_old_eq_new() # set old parameter values to new parameter values
-        if iters_so_far % 2 == 0:
-            
-            surrbefore, _,_,_,_, _, g = compute_lossandgrad_dist(*args)
-            # print latent_loss
-            # failure("===========")
-            surrbefore = np.array(surrbefore)
-            if np.allclose(g, 0):
-                print("Got zero gradient. not updating")
-            else:
-                stepdir = U.conjugate_gradient(fisher_vector_product, g, cg_iters=cg_iters)
-                assert np.isfinite(stepdir).all()
-                shs = .5*stepdir.dot(fisher_vector_product(stepdir))
-                lm = np.sqrt(shs / max_kl)
-                fullstep = stepdir / lm
-                expectedimprove = g.dot(fullstep)
-                stepsize = 0.3
-                thbefore = get_flat()
-                for _ in range(10):
-                    thnew = thbefore + fullstep * stepsize
-                    set_from_flat(thnew)
-                    meanlosses = surr, kl, _,_,_, l_loss = np.array(compute_losses(*args))
-                    improve = surr - surrbefore
-                    if not np.isfinite(meanlosses).all():
-                        print("Got non-finite value of losses -- bad!")
-                    elif kl > max_kl * 1.5:
-                        print("violated KL constraint. KL : {} MaxKL : {}".format(kl, max_kl*1.5))
-                    elif improve < 0:
-                        print("surrogate didn't improve. shrinking step.")
-                    else:
-                        break
-                    stepsize *= .5
+        surrbefore, _,_,_,_, _, g = compute_lossandgrad(*args)
+        print "Surr gain :{}".format(surrbefore)
+        surrbefore = np.array(surrbefore)
+        if np.allclose(g, 0):
+            print("Got zero gradient. not updating")
+        else:
+            stepdir = U.conjugate_gradient(fisher_vector_product, g, cg_iters=cg_iters)
+            assert np.isfinite(stepdir).all()
+            shs = .5*stepdir.dot(fisher_vector_product(stepdir))
+            lm = np.sqrt(shs / max_kl)
+            fullstep = stepdir / lm
+            expectedimprove = g.dot(fullstep)
+            stepsize = 1.0
+            thbefore = get_flat()
+            for _ in range(10):
+                thnew = thbefore + fullstep * stepsize
+                set_from_flat(thnew)
+                meanlosses = surr, kl, _,_,_, lloss = np.array(compute_losses(*args))
+                improve = surr - surrbefore
+                if not np.isfinite(meanlosses).all():
+                    print("Got non-finite value of losses -- bad!")
+                elif kl > max_kl * 1.5:
+                    print("violated KL constraint. shrinking step.")
+                elif improve < 0:
+                    print("surrogate didn't improve. shrinking step.")
                 else:
-                    print("couldn't compute a good step")
-                    set_from_flat(thbefore)
-
-            for _ in range(vf_iters):
-                for (mbob, mbc, mbret) in dataset.iterbatches((seg["ob"], seg["c_in"], seg["tdlamret"]), 
-                include_final_partial_batch=False, batch_size=64):
-                    vfloss = vf_train(mbob, mbc, mbret)
-                    # print vfloss
-
-        if iters_so_far % 2 == 1:
-            # failure("==C0==========")
-            surrbefore, _,_,_,_, _, g = compute_lossandgrad_task(*args)
-            surrbefore = np.array(surrbefore)
-            # failure("==C1==========")
-            if np.allclose(g, 0):
-                print("Got zero gradient. not updating")
+                    break
+                stepsize *= .5
             else:
-                # failure("==C2==========")
-                stepdir = U.conjugate_gradient(fisher_vector_product_task, g, cg_iters=cg_iters)
-                assert np.isfinite(stepdir).all()
-                # failure("==C3==========")
-                shs = .5*stepdir.dot(fisher_vector_product_task(stepdir))
-                lm = np.sqrt(shs / max_kl)
-                fullstep = stepdir / lm
-                expectedimprove = g.dot(fullstep)
-                stepsize = 0.3
-                thbefore = get_flat_task()
-                for _ in range(10):
-                    thnew = thbefore + fullstep * stepsize
-                    set_from_flat_task(thnew)
-                    meanlosses = surr, kl, _,_,_, l_loss = np.array(compute_losses(*args))
-                    improve = surr - surrbefore
-                    if not np.isfinite(meanlosses).all():
-                        print("Got non-finite value of losses -- bad!")
-                    elif kl > max_kl * 1.5:
-                        print("violated KL constraint. KL : {} MaxKL : {}".format(kl, max_kl*1.5))
-                    elif improve < 0:
-                        print("surrogate didn't improve. shrinking step.")
-                    else:
-                        break
-                    stepsize *= .5
-                else:
-                    print("couldn't compute a good step")
-                    set_from_flat_task(thbefore)
+                print("couldn't compute a good step")
+                set_from_flat(thbefore)
 
-            for _ in range(vf_iters):
-                for (mbob, mbc, mbret) in dataset.iterbatches((seg["ob"], seg["c_in"], seg["tdlamret"]), 
-                include_final_partial_batch=False, batch_size=64):
-                    vfloss = vf_train_task(mbob, mbc, mbret)
-                    # print vfloss
+        for _ in range(vf_iters):
+            for (mbob, mbret) in dataset.iterbatches((seg["ob"], seg["tdlamret"]), 
+            include_final_partial_batch=False, batch_size=64):
+                vfloss = vf_train(mbob, mbret)
+
+        # if iters_so_far % 2 == 1:  
+        #     def fisher_vector_product_task(p):
+        #         return compute_fvp_task(p, *fvpargs) + cg_damping * p
+
+        #     assign_old_eq_new() # set old parameter values to new parameter values
+        #     surrbefore, _,_,_,_, g = compute_lossandgrad_task(*args)
+        #     surrbefore = np.array(surrbefore)
+        #     if np.allclose(g, 0):
+        #         print("Got zero gradient. not updating")
+        #     else:
+        #         stepdir = U.conjugate_gradient(fisher_vector_product_task, g, cg_iters=cg_iters)
+        #         assert np.isfinite(stepdir).all()
+        #         shs = .5*stepdir.dot(fisher_vector_product_task(stepdir))
+        #         lm = np.sqrt(shs / max_kl)
+        #         fullstep = stepdir / lm
+        #         expectedimprove = g.dot(fullstep)
+        #         stepsize = 1.0
+        #         thbefore = get_flat_task()
+        #         for _ in range(10):
+        #             thnew = thbefore + fullstep * stepsize
+        #             set_from_flat_task(thnew)
+        #             meanlosses = surr, kl, _,_,_ = np.array(compute_losses(*args))
+        #             improve = surr - surrbefore
+        #             if not np.isfinite(meanlosses).all():
+        #                 print("Got non-finite value of losses -- bad!")
+        #             elif kl > max_kl * 1.5:
+        #                 print("violated KL constraint. shrinking step.")
+        #             elif improve < 0:
+        #                 print("surrogate didn't improve. shrinking step.")
+        #             else:
+        #                 break
+        #             stepsize *= .5
+        #         else:
+        #             print("couldn't compute a good step")
+        #             set_from_flat_task(thbefore)
+
+        #     for _ in range(vf_iters):
+        #         for (mbob, mbret) in dataset.iterbatches((seg["ob"], seg["tdlamret"]), 
+        #         include_final_partial_batch=False, batch_size=64):
+        #             vfloss = vf_train_task(mbob, mbret)
+
 
 
         episodes_so_far += len(seg["ep_lens"])
@@ -440,7 +406,7 @@ def learn(env_list, env_id_list, policy_func,
             ret_std_log_d = pd.DataFrame(ret_std_log)
 
             
-            log_dir = "{}_log".format("DistSimple")
+            log_dir = "{}_log".format(save_name)
             log_dir = os.path.join(cur_dir, log_dir)
             if not os.path.exists(log_dir):
                 mkdir_p(log_dir)
@@ -461,7 +427,7 @@ def learn(env_list, env_id_list, policy_func,
         header('timesteps_so_far : {}'.format(timesteps_so_far))
         header('mean_ret : {}'.format(mean_ret))
         header('std_ret : {}'.format(std_ret))
-        header('latent loss : {}'.format(l_loss))
+        header('mean latent loss : {}'.format(np.mean(seg["latent_loss"])))
 
 
 def flatten_lists(listoflists):
