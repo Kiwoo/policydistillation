@@ -103,6 +103,20 @@ def add_vtarg_and_adv(seg, gamma, lam):
         gaelam[t] = lastgaelam = delta + gamma * lam * nonterminal * lastgaelam
     seg["tdlamret"] = seg["adv"] + seg["vpred"]
 
+def compute_mean_policy(pi, env_list, seg):
+    T = len(seg["ob"])
+    num_env = len(env_list)
+    c_in = np.zeros(num_env)
+
+    for t in range(T):
+        mean_pi = np.zeros(num_env)
+        for c in range(num_env):
+            
+
+
+
+
+
 def load_checkpoints(load_requested = True, checkpoint_dir = get_cur_dir()):
     saver = tf.train.Saver(max_to_keep = None)
     checkpoint = tf.train.get_checkpoint_state(checkpoint_dir)
@@ -305,6 +319,8 @@ def learn(env_list, save_name, policy_func,
         fvpargs = [arr[::5] for arr in args]
 
         if iters_so_far % 2 == 0:
+
+            compute_mean_policy(seg)
 
             def fisher_vector_product(p):
                 return compute_fvp(p, *fvpargs) + cg_damping * p
