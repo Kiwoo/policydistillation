@@ -175,6 +175,25 @@ def check_performance(pi, env, ctrl_range, stochastic = True, average = 3, figur
     # (2) Policy Magnitud check
     # This is to check whether our network properly learn to continuous control variable
 
+    # (3) Policy Control check
+    # This is to check whether interactive control of agent is available by using this method.
+
+    len_roll = 1000
+    total_len = len(controls) * len_roll  
+    
+    ob = env.reset()
+    vels = []
+    for i, ctrl in enumerate(controls):
+        c_in[0] = ctrl
+        set_env_vel(env, c_in[0])
+        for _ in range(len_roll):
+            ac, _ = pi.act(stochastic, ob, c_in)
+            ob, _, _, _ = env.step(ac)
+            vel = env.get_vel()
+            vels.append(vel)
+
+
+
     if figure == True:
         title_size = 22
         tick_size = 18
@@ -204,28 +223,33 @@ def check_performance(pi, env, ctrl_range, stochastic = True, average = 3, figur
         plt.show()
         plt.savefig("Check"+'.png')
 
-        for idx in range(len(controls)):
-            fig1 = plt.figure(idx+2, figsize=(10, 8))
-            num_fig = 2 * num_act
-            traj_info = traj_infos[idx]
-            total_len = traj_info["len"]
-            core_act = traj_info["core_act"]
-            sub_act = traj_info["sub_act"]
-            time_step = np.arange(total_len)   
+        plt.figure(2, figsize = (10, 8))
+        vels = np.squeeze(vels)
+        plt.plot(range(total_len), vels, '-', lw = 1, color = b, markersize = 2, mew = 2, label="Actual Vel")
+        plt.plot(range(total_len), vels, '-', lw = 1, color = b, markersize = 2, mew = 2, label="Actual Vel")
+
+        # for idx in range(len(controls)):
+        #     fig1 = plt.figure(idx+3, figsize=(10, 8))
+        #     num_fig = 2 * num_act
+        #     traj_info = traj_infos[idx]
+        #     total_len = traj_info["len"]
+        #     core_act = traj_info["core_act"]
+        #     sub_act = traj_info["sub_act"]
+        #     time_step = np.arange(total_len)   
                      
-            for act in range(num_act):                    
-                plt.subplot(3, 1, act+1)
-                plt.plot(time_step, core_act[:, act], '.', lw=lw, color=g, markersize= 2, mew=2) 
-                plt.plot(time_step, sub_act[:, act], '.', lw=lw, color=c, markersize= 2, mew=2) 
-                plt.title("Comparison of action magnitude", fontsize=title_size)
-                plt.xlabel("timesteps", fontsize=ysize)
-                plt.ylabel("mag_action", fontsize=xsize)
-                plt.legend(loc='lower right', ncol=2, prop={'size':legend_size})
-                plt.tick_params(axis='x', labelsize=tick_size)
-                plt.tick_params(axis='y', labelsize=tick_size)
-                plt.tight_layout()
-                plt.show()
-                plt.savefig("compar_mag_{}.png".format(idx))
+        #     for act in range(num_act):                    
+        #         plt.subplot(3, 1, act+1)
+        #         plt.plot(time_step, core_act[:, act], '.', lw=lw, color=g, markersize= 2, mew=2) 
+        #         plt.plot(time_step, sub_act[:, act], '.', lw=lw, color=c, markersize= 2, mew=2) 
+        #         plt.title("Comparison of action magnitude", fontsize=title_size)
+        #         plt.xlabel("timesteps", fontsize=ysize)
+        #         plt.ylabel("mag_action", fontsize=xsize)
+        #         plt.legend(loc='lower right', ncol=2, prop={'size':legend_size})
+        #         plt.tick_params(axis='x', labelsize=tick_size)
+        #         plt.tick_params(axis='y', labelsize=tick_size)
+        #         plt.tight_layout()
+        #         plt.show()
+        #         plt.savefig("compar_mag_{}.png".format(idx))
         plt.close('all')
 
 

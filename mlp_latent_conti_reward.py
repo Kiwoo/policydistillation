@@ -74,15 +74,29 @@ class MlpLatentContinuousRewardPolicy(object):
 
         self.pd = pdtype.pdfromflat(pdparam)
 
+        self.pd_core = pdtype.pdfromflat(U.concatenate([mean1, mean1 * 0.0 + logstd], axis=1))
+        self.pd_task = pdtype.pdfromflat(U.concatenate([mean2, mean2 * 0.0 + logstd], axis=1))
+
         self.state_in = []
         self.state_out = []
 
         stochastic = tf.placeholder(name = "stochastic", dtype=tf.bool, shape=())
         ac = U.switch(stochastic, self.pd.sample(), self.pd.mode())
+        ac_core = U.switch(stochastic, self.pd_core.sample(), self.pd_core.mode())
+        ac_task = U.switch(stochastic, self.pd_task.sample(), self.pd_task.mode())
         # self.opname = ac.name
 
         self._act = U.function([stochastic, ob, c_in], [ac, self.vpred])
         self._act_raw = U.function([stochastic, ob, c_in], [ac, mean1, mean2])
+        self._act_core = U.function([stochastic, ob], [ac_core])
+        self._act_task = U.function([stochastic, ob, c_in], [ac_task])
+
+    def act_core(self, stochastic, ob):
+        ac_c =  self._act_core(stochastic, ob[None])
+        return ac_c[0]
+    def act_task(self, stochastic, ob):
+        ac_t =  self._act_task(stochastic, ob[None], c_in[None])
+        return ac_t[0]
 
     def act_raw(self, stochastic, ob, c_in):
         ac1, acm1, acm2 = self._act_raw(stochastic, ob[None], c_in[None])
