@@ -26,7 +26,7 @@ def load_checkpoints(saver, checkpoint_dir = get_cur_dir()):
     else:
         header("Could not find old checkpoint")
 
-def sim(env_id, num_timesteps, seed):
+def sim(save_dir, env_id, num_timesteps, seed):
     # whoami  = mpi_fork(num_cpu)
     # if whoami == "parent":
     #     return
@@ -36,11 +36,11 @@ def sim(env_id, num_timesteps, seed):
     sess.__enter__()
 
     cur_dir = get_cur_dir()
-    save_dir = os.path.join(cur_dir, env_id)
-    meta_dir = os.path.join(save_dir, "checkpoint-11.meta")
+    save_path = os.path.join(cur_dir, save_dir)
+    meta_dir = os.path.join(save_path, "checkpoint-11.meta")
 
     saver = tf.train.import_meta_graph(meta_dir)
-    load_checkpoints(saver, checkpoint_dir = save_dir)
+    load_checkpoints(saver, checkpoint_dir = save_path)
     # saver.restore(sess, tf.train.latest_checkpoint('./'))
 
     graph = tf.get_default_graph()
@@ -48,12 +48,16 @@ def sim(env_id, num_timesteps, seed):
 
     ob_s = graph.get_tensor_by_name("pi/ob:0")
     ac_s = graph.get_tensor_by_name("pi/cond/Merge:0")
+    c_in_s = graph.get_tensor_by_name("pi/c_in:0")
     stochastic_s = graph.get_tensor_by_name("pi/stochastic:0")
 
-    pi = U.function([ob_s, stochastic_s], ac_s)
+    pi = U.function([stochastic_s, ob_s, c_in_s], ac_s)
 
     env = gym.make(env_id)
     ob = env.reset()
+
+    c_in = np.zeros(1)
+    c_in[0] = 0
 
     iter_log    = []
     vel_log     = []
@@ -66,7 +70,7 @@ def sim(env_id, num_timesteps, seed):
             print "Step : {}".format(i)
         # action = env.action_space.sample()  # your agent here (this takes random actions)
         # feed_dict ={ob_s:ob[None], stochastic_s:True}
-        ac = pi(ob[None], True)
+        ac = pi(True, ob[None], c_in[None])
         # print ac
         ob, reward, done, info = env.step(ac)        
         vel = env.getvel()
@@ -86,7 +90,7 @@ def sim(env_id, num_timesteps, seed):
     print "Average Velocity : {}".format(np.mean(vel_log))
 
 def main():
-    sim('Hopper-v1', num_timesteps=1e7, seed=0)
+    sim(save_dir = 'Latent_Conti_Reward', env_id = "Hopper-v1", num_timesteps=1e7, seed=0)
 
 if __name__ == '__main__':
     main()

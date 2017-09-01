@@ -14,19 +14,20 @@ from contextlib import contextmanager
 import h5py
 import pandas as pd
 import os
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
 
-def traj_segment_generator(pi, env_list, horizon, stochastic):
+def traj_segment_generator(pi, env, control_in, horizon, stochastic):
     # Initialize state variables
     t = 0
-    env_index = 0
-    num_env = len(env_list)
-    env = env_list[env_index]
+    num_control = len(control_in)
     ac = env.action_space.sample()
     new = True
     rew = 0.0
     ob = env.reset()
-    c_in = np.zeros(num_env)
-    part_horizon = np.arange(num_env+1) * horizon / num_env
+    c_in = np.zeros(1)
+    part_horizon = np.arange(num_control+1) * horizon / num_control
 
     cur_ep_ret = 0
     cur_ep_len = 0
@@ -42,7 +43,9 @@ def traj_segment_generator(pi, env_list, horizon, stochastic):
     acs = np.array([ac for _ in range(horizon)])
     prevacs = acs.copy()
 
-    c_in[env_index] = 1.0
+    ctrl_index = 0
+    c_in[0] = control_in[ctrl_index]
+    set_env_vel(env, c_in[0])
 
     while True:
         prevac = ac
@@ -81,26 +84,166 @@ def traj_segment_generator(pi, env_list, horizon, stochastic):
             cur_ep_ret = 0
             cur_ep_len = 0
 
-            if i > part_horizon[env_index+1]: # env index update to +1 so every environment contains similar number of trajectories.
-                c_in[env_index] = 0.0
-                env_index = (env_index + 1) % num_env
-                env = env_list[env_index]
-                c_in[env_index] = 1.0
+            if i > part_horizon[ctrl_index+1]: # env index update to +1 so every environment contains similar number of trajectories.
+                ctrl_index = (ctrl_index + 1) % num_control
+                c_in[0] = control_in[ctrl_index]
+                set_env_vel(env, c_in[0])
 
             ob = env.reset()
         t += 1
 
+def sample_control_to_train(pi, env, control_in, upper_percent, lower_percent, stochastic = True):
+    c_in = np.zeros(1)
+    ep_rets = []
+    ctrls = []
+    for _, ctrl in enumerate(control_in):
+        c_in[0] = ctrl        
+        ep_ret, _, _, _ = traj_sample_with_control(pi, env, c_in, stochastic)
+        ctrls.append(ctrl)
+        ep_rets.append(ep_ret)
+
+    upper_cutline = np.percentile(ep_rets, upper_percent, interpolation='higher')
+    lower_cutline = np.percentile(ep_rets, lower_percent, interpolation='higher')
+    train_ctrls = []
+
+    for i, ep_ret in enumerate(ep_rets):
+        if ep_ret >= lower_cutline and ep_ret <= upper_cutline:
+            train_ctrls.append(ctrls[i])
+    return train_ctrls
+
+
+def traj_sample_with_control(pi, env, c_in, stochastic):
+    t = 0    
+    rew = 0.0
+    set_env_vel(env, c_in[0])
+    ob = env.reset()
+    cur_ep_ret = 0
+    cur_ep_len = 0
+    core_acts = []
+    sub_acts = []
+
+    while True:
+        ac, core_act, sub_act = pi.act_raw(stochastic, ob, c_in)        
+        ob, rew, new, _ = env.step(ac)
+        cur_ep_ret += rew
+        cur_ep_len += 1
+        core_acts.append(core_act)
+        sub_acts.append(sub_act)
+        if new:
+            return cur_ep_ret, cur_ep_len, core_acts, sub_acts
+
+
+def check_performance(pi, env, ctrl_range, stochastic = True, average = 3, figure = True, save = False, save_dir = None):
+    controls = np.arange(ctrl_range["min"], ctrl_range["max"], 0.05, 'float32')
+    c_in = np.zeros(1)
+    num_act = 3
+
+    return_controls = []
+    traj_infos = []
+
+
+    failure("Checking performance now!!!")
+
+    # (1) Policy Performance check
+    # This is to check whether our network properly learn to continuous control variable
+    for i, ctrl in enumerate(controls):
+        header("Now {}".format(ctrl))
+        c_in[0] = ctrl
+        epi_rets = []
+        epi_lens = 0
+        core_act_concat = []
+        sub_act_concat = []
+
+        for roll in range(average):
+            epi_ret, epi_len, core_acts, sub_acts = traj_sample_with_control(pi, env, c_in, stochastic)
+            epi_rets.append(epi_ret)
+            epi_lens += epi_len
+            core_act_concat.append(core_acts)
+            sub_act_concat.append(sub_acts)
+
+
+        return_controls.append(np.mean(epi_rets))
+        core_act_concat = np.concatenate(core_act_concat, axis = 0)
+        sub_act_concat = np.concatenate(sub_act_concat, axis = 0)
+        warn("Traj Info length: {} core shape: {} sub shape: {}".format(epi_lens, np.shape(core_act_concat), np.shape(sub_act_concat)))
+        traj_info = {"len": epi_lens, "core_act": core_act_concat, "sub_act": sub_act_concat}
+        traj_infos.append(traj_info)
+
+        # Somewhat squeezing or concatenating lists are needed here!!!
+
+
+    # (2) Policy Magnitud check
+    # This is to check whether our network properly learn to continuous control variable
+
+    if figure == True:
+        title_size = 22
+        tick_size = 18
+        legend_size = 17
+        ysize = 18
+        xsize = 18
+        lw = 3
+        ms = 12
+        mew = 5
+        error_region_alpha = 0.25
+        plt.style.use('seaborn-darkgrid')
+        fig = plt.figure(1, figsize=(10,8))
+        controls = np.squeeze(controls)
+        return_controls = np.squeeze(return_controls)
+        c = 'red'
+        g = 'green'
+
+        plt.plot(controls, return_controls, '-', lw=lw, color=c,
+                        markersize=ms, mew=mew, label="conrols_mean_reward")
+        plt.title("Check performance", fontsize=title_size)
+        plt.xlabel("Controls", fontsize=ysize)
+        plt.ylabel("Mean_Reward", fontsize=xsize)
+        plt.legend(loc='lower right', ncol=2, prop={'size':legend_size})
+        plt.tick_params(axis='x', labelsize=tick_size)
+        plt.tick_params(axis='y', labelsize=tick_size)
+        plt.tight_layout()
+        plt.show()
+        plt.savefig("Check"+'.png')
+
+        for idx in range(len(controls)):
+            fig1 = plt.figure(idx+2, figsize=(10, 8))
+            num_fig = 2 * num_act
+            traj_info = traj_infos[idx]
+            total_len = traj_info["len"]
+            core_act = traj_info["core_act"]
+            sub_act = traj_info["sub_act"]
+            time_step = np.arange(total_len)   
+                     
+            for act in range(num_act):                    
+                plt.subplot(3, 1, act+1)
+                plt.plot(time_step, core_act[:, act], '.', lw=lw, color=g, markersize= 2, mew=2) 
+                plt.plot(time_step, sub_act[:, act], '.', lw=lw, color=c, markersize= 2, mew=2) 
+                plt.title("Comparison of action magnitude", fontsize=title_size)
+                plt.xlabel("timesteps", fontsize=ysize)
+                plt.ylabel("mag_action", fontsize=xsize)
+                plt.legend(loc='lower right', ncol=2, prop={'size':legend_size})
+                plt.tick_params(axis='x', labelsize=tick_size)
+                plt.tick_params(axis='y', labelsize=tick_size)
+                plt.tight_layout()
+                plt.show()
+                plt.savefig("compar_mag_{}.png".format(idx))
+        plt.close('all')
+
+
+
+
+
+
+
+
+
+
+
 def sample_rew_vel(vel_min, vel_max, num_sample = 1):
-    print "Sampling reward velocity constant"
     s = np.random.uniform(vel_min, vel_max, num_sample)
     return s
 
 def set_env_vel(env, vel):
-    print "Set environment velocity"
     env.setvel(vel)
-
-def 
-
 
 
 def add_vtarg_and_adv(seg, gamma, lam):
@@ -129,7 +272,7 @@ def load_checkpoints(load_requested = True, checkpoint_dir = get_cur_dir()):
             mkdir_p(checkpoint_dir)
     return saver    
 
-def learn(env_list, save_name, policy_func, 
+def learn(env, save_name, ctrl_range, policy_func, 
         timesteps_per_batch, # what to train on
         max_kl, cg_iters,
         gamma, lam, # advantage estimation
@@ -150,8 +293,8 @@ def learn(env_list, save_name, policy_func,
     # np.set_printoptions(precision=3)    
     # Setup losses and stuff
     # ----------------------------------------
-    ob_space    = env_list[0].observation_space
-    ac_space    = env_list[0].action_space
+    ob_space    = env.observation_space
+    ac_space    = env.action_space
     pi          = policy_func("pi", ob_space, ac_space)
     oldpi       = policy_func("oldpi", ob_space, ac_space)
     atarg       = tf.placeholder(dtype=tf.float32, shape=[None]) # Target advantage function (if applicable)
@@ -299,12 +442,22 @@ def learn(env_list, save_name, policy_func,
         elif max_iters and iters_so_far >= max_iters:
             print "Max Iter : {}".format(iters_so_far)
             break
-        warn("********** Iteration %i ************"%iters_so_far)
+        warn("********** Iteration %i ************"%iters_so_far)        
 
-        # with timed("sampling"):
-        #       seg = seg_gen.__next__()
-        seg = traj_segment_generator(pi, env_list, timesteps_per_batch, stochastic=True)
+        sampled_ctrl = sample_rew_vel(ctrl_range["min"], ctrl_range["max"], num_sample = 30)
+
+        if iters_so_far % 2 == 0:
+            # No control, extract good reward trajectories for core policy
+            train_ctrls = sample_control_to_train(pi, env, control_in = sampled_ctrl, upper_percent = 100, lower_percent = 60, stochastic = True)
+        elif iters_so_far % 2 == 1:
+# No control, extract good reward trajectories for core policy
+            train_ctrls = sample_control_to_train(pi, env, control_in = sampled_ctrl, upper_percent = 40, lower_percent = 0, stochastic = True)
+        
+
+        
+        seg = traj_segment_generator(pi, env, train_ctrls, timesteps_per_batch, stochastic=True)
         add_vtarg_and_adv(seg, gamma, lam)
+
 
 
         # ob, ac, atarg, ret, td1ret = map(np.concatenate, (obs, acs, atargs, rets, td1rets))
@@ -351,6 +504,7 @@ def learn(env_list, save_name, policy_func,
                     elif improve < 0:
                         print("surrogate didn't improve. shrinking step.")
                     else:
+                        print "Good 1"
                         break
                     stepsize *= .5
                 else:
@@ -394,6 +548,7 @@ def learn(env_list, save_name, policy_func,
                     elif improve < 0:
                         print("surrogate didn't improve. shrinking step.")
                     else:
+                        print "Good 2"
                         break
                     stepsize *= .5
                 else:
@@ -427,6 +582,9 @@ def learn(env_list, save_name, policy_func,
                 print "Save  meta graph"
                 saver.save(U.get_session(), save_dir + '/' + 'checkpoint', global_step = iters_so_far, write_meta_graph = True)
                 meta_saved = True
+
+        if iters_so_far > 0 and iters_so_far % 10 == 0:
+            check_performance(pi, env, ctrl_range, stochastic = True, average = 3, figure = True, save = False, save_dir = None)
 
         if iters_so_far % save_data_freq == 1:
             iter_log_d = pd.DataFrame(iter_log)
