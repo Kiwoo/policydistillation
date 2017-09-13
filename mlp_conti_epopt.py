@@ -6,7 +6,7 @@ from distributions import make_pdtype
 import numpy as np
 
 
-class MlpLatentContinuousRewardPolicy(object):
+class MlpContinuousEpoptPolicy(object):
     recurrent = False
     def __init__(self, name, *args, **kwargs):
         with tf.variable_scope(name):

@@ -611,16 +611,16 @@ def learn(env, save_name, ctrl_range, policy_func,
         ret_mean_log.append(mean_ret)
         ret_std_log.append(std_ret)
 
-        # if iters_so_far > 10 and iters_so_far % save_model_freq == 1:
-        if meta_saved == True:
-            saver.save(U.get_session(), save_dir + '/' + 'checkpoint', global_step = iters_so_far, write_meta_graph = False)
-        else:
-            print "Save  meta graph"
-            saver.save(U.get_session(), save_dir + '/' + 'checkpoint', global_step = iters_so_far, write_meta_graph = True)
-            meta_saved = True
+        if iters_so_far > 10 and iters_so_far % save_model_freq == 1:
+            if meta_saved == True:
+                saver.save(U.get_session(), save_dir + '/' + 'checkpoint', global_step = iters_so_far, write_meta_graph = False)
+            else:
+                print "Save  meta graph"
+                saver.save(U.get_session(), save_dir + '/' + 'checkpoint', global_step = iters_so_far, write_meta_graph = True)
+                meta_saved = True
 
-        # if iters_so_far > 0 and iters_so_far % 10 == 0:
-        #     check_performance(pi, env, ctrl_range, stochastic = True, average = 3, figure = True, save = False, save_dir = None)
+        if iters_so_far > 0 and iters_so_far % 10 == 0:
+            check_performance(pi, env, ctrl_range, stochastic = True, average = 3, figure = True, save = False, save_dir = None)
 
         if iters_so_far % save_data_freq == 1:
             iter_log_d = pd.DataFrame(iter_log)
